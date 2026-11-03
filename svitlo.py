@@ -1,4 +1,4 @@
-# Svitlo Bot v1.1 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.2 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo("Europe/Kyiv")
 DTEK_URL = "https://www.dtek-oem.com.ua/ua/shutdowns"
 STATE_FILE = "state.json"
-WARN_MINUTES = [60, 30]
+WARN_MINUTES = [30, 15]
 WAIT_MAX_SEC = 9 * 60
 FAIL_ALERT_AFTER = 3
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -138,7 +138,7 @@ def update_pinned(state, chat, c):
         mid = send(chat, text, silent=True)
         kind = "text"
     else:
-        cap = caption_text(c)
+        cap = ""
         if pid and state.get("pin_kind") == "photo":
             media = {"type": "photo", "media": "attach://img", "caption": cap, "parse_mode": "HTML"}
             r = tg_files("editMessageMedia", {"chat_id": chat, "message_id": pid,
@@ -158,7 +158,7 @@ def update_pinned(state, chat, c):
 
 def send_status(chat, c, silent=False, title=None):
     png = safe_render(c)
-    cap = caption_text(c) if not title else title
+    cap = title or ""
     if png is None or not send_photo(chat, png, cap, silent):
         send(chat, (title + "\n\n" if title else "") + status_text(c), silent)
 
@@ -651,44 +651,61 @@ def banner_relevant(b):
 # ---------------- notifications ----------------
 
 def warn_targets(c):
-    t = [(s, e, None) for s, e in c.offs if s > c.now]
-    if c.event and c.event["start"] > c.now:
-        t.append((c.event["start"], c.event["end"], c.event["desc"]))
+    t = []
+    for s, e in c.offs:
+        if s > c.now:
+            t.append(("off", s, s, e, None))
+        if e > c.now:
+            t.append(("on", e, s, e, None))
+    ev = c.event
+    if ev:
+        if ev["start"] > c.now:
+            t.append(("off", ev["start"], ev["start"], ev["end"], ev["desc"]))
+        if ev["end"] > c.now:
+            t.append(("on", ev["end"], ev["start"], ev["end"], ev["desc"]))
     return t
+
+
+def allowed(kind, at, s, e, w):
+    return kind == "off" or at - timedelta(minutes=w) > s
 
 
 def do_warnings(c, state, chat):
     sent = set(state.get("sent", []))
     c.now = now()
-    for s, e, desc in warn_targets(c):
-        lead = (s - c.now).total_seconds() / 60
-        due = [w for w in WARN_MINUTES if lead <= w + 0.5]
+    for kind, at, s, e, desc in warn_targets(c):
+        lead = (at - c.now).total_seconds() / 60
+        due = [w for w in WARN_MINUTES if lead <= w + 0.5 and allowed(kind, at, s, e, w)]
         if not due:
             continue
         w = min(due)
-        key = s.isoformat()
+        key = f"{kind}|{at.isoformat()}"
         if f"{key}|{w}" in sent:
             continue
         for w2 in WARN_MINUTES:
             if w2 >= w:
                 sent.add(f"{key}|{w2}")
-        mins = max(1, round(lead))
-        head = "⚠️" if w == max(WARN_MINUTES) else "⏰"
-        txt = [f"{head} <b>Через {mins} мин нет света</b>",
-               f"🕒 {fmt_iv(s, e)}" + (f" — {escape(desc)}" if desc else "")]
+        mins = w if abs(lead - w) <= 2 else max(1, round(lead))
+        if kind == "off":
+            txt = [f"⏰ <b>Через {mins} мин нет света</b>",
+                   f"🕒 {fmt_iv(s, e)}" + (f" — {escape(desc)}" if desc else "")]
+        else:
+            approx = "~" if desc else ""
+            txt = [f"🟢 <b>Через {approx}{mins} мин включат свет</b>",
+                   f"🕒 в {approx}{fmt_end(s, e)}"]
         send(chat, "\n".join(txt))
     cutoff = (c.now - timedelta(days=2)).isoformat()
-    state["sent"] = sorted(k for k in sent if k.split("|")[0] >= cutoff)
+    state["sent"] = sorted(k for k in sent if k.split("|")[1] >= cutoff)
 
 
 def next_due(c, state):
     sent = set(state.get("sent", []))
     best = None
-    for s, e, desc in warn_targets(c):
+    for kind, at, s, e, desc in warn_targets(c):
         for w in WARN_MINUTES:
-            if f"{s.isoformat()}|{w}" in sent:
+            if f"{kind}|{at.isoformat()}|{w}" in sent or not allowed(kind, at, s, e, w):
                 continue
-            due = s - timedelta(minutes=w)
+            due = at - timedelta(minutes=w)
             if due > now() and (best is None or due < best):
                 best = due
     return best
@@ -791,7 +808,7 @@ def main():
         return
     msgs = [m for m in msgs if m["chat"]["id"] == chat]
     if not state.get("welcomed"):
-        send(chat, "👋 Бот подключён. Буду предупреждать за 60 и 30 минут до отключения, "
+        send(chat, "👋 Бот подключён. Буду предупреждать за 30 и 15 минут до отключения и до включения, "
                    "писать об изменениях графика и аварийных отключениях. "
                    "Актуальный статус — в закреплённом сообщении. Напиши мне что угодно — пришлю свежий статус.")
         state["welcomed"] = True
