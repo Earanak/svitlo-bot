@@ -432,6 +432,13 @@ def clip_day(ivs, d):
     return out
 
 
+def is_schedule_event(ev, offs):
+    if "стабіліз" in ev["desc"].lower() or "графік" in ev["desc"].lower():
+        return True
+    tol = timedelta(minutes=31)
+    return any(s - tol <= ev["start"] and ev["end"] <= e + tol for s, e in offs)
+
+
 class Ctx:
     pass
 
@@ -450,6 +457,8 @@ def make_ctx(data):
     c.maybes = intervals(c.days, "maybe")
     c.event = house_event(h)
     if c.event and c.event["end"] <= c.now:
+        c.event = None
+    if c.event and is_schedule_event(c.event, c.offs):
         c.event = None
     c.banner = data["banner"]
     c.addr = f"{data['street']}, {data['house_key']}"
