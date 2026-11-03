@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "5,15,25,35,45,55 * * * *"
   workflow_dispatch:
+    inputs:
+      reply:
+        default: "0"
 
 permissions:
   contents: write
@@ -41,6 +44,7 @@ jobs:
           ADDRESS: ${{ secrets.ADDRESS }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GROUP: ${{ vars.GROUP }}
+          REPLY: ${{ inputs.reply }}
         run: python svitlo.py
 
       - name: Save state

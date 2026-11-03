@@ -1,4 +1,4 @@
-# Svitlo Bot v1.3 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.4 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -25,6 +25,7 @@ TOKEN = os.environ.get("TG_TOKEN", "").strip()
 ADDRESS = os.environ.get("ADDRESS", "").strip()
 GROUP_OVERRIDE = os.environ.get("GROUP", "").strip()
 CHAT_ENV = os.environ.get("TG_CHAT_ID", "").strip()
+REPLY = os.environ.get("REPLY", "").strip() == "1"
 
 SLOT_MAP = {
     "yes": ("on", "on"), "no": ("off", "off"),
@@ -849,7 +850,7 @@ def main():
         data = fetch_dtek(*parts)
     except AddrError as e:
         msg = str(e)
-        if state.get("addr_err") != msg or msgs:
+        if state.get("addr_err") != msg or msgs or REPLY:
             send(chat, "❗ <b>Проблема с адресом</b>\n" + escape(msg) +
                  "\n\nИсправь секрет ADDRESS (формат: город|улица|дом).")
         state["addr_err"] = msg
@@ -861,7 +862,7 @@ def main():
         log(f"DTEK fetch failed ({state['fails']}): {err}")
         if state["fails"] == FAIL_ALERT_AFTER:
             send(chat, f"⚠️ Не могу получить данные с сайта ДТЕК уже ~{FAIL_ALERT_AFTER * 10} мин.\n<code>{escape(err)}</code>")
-        for _ in msgs:
+        for _ in (msgs or ([1] if REPLY else [])):
             send(chat, "⚠️ Сейчас сайт ДТЕК не отвечает, попробую на следующей проверке.")
             break
         save_state(state)
@@ -881,7 +882,7 @@ def main():
     check_schedule_change(c, state, chat)
     do_warnings(c, state, chat)
     update_pinned(state, chat, c)
-    if msgs:
+    if msgs or REPLY:
         send_status(chat, c)
     save_state(state)
 
