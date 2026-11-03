@@ -375,14 +375,6 @@ def clip_day(ivs, d):
     return out
 
 
-def day_lines(days, offs, maybes, d):
-    if d not in days:
-        return ["   график ещё не опубликован"]
-    lines = [f"   ⛔ {fmt_iv(s, e)}" for s, e in clip_day(offs, d)]
-    lines += [f"   ❔ возможно {fmt_iv(s, e)}" for s, e in clip_day(maybes, d)]
-    return lines or ["   ✅ без отключений"]
-
-
 class Ctx:
     pass
 
@@ -407,41 +399,34 @@ def make_ctx(data):
     return c
 
 
+def day_line(c, d):
+    label = day_word(d, c.today).capitalize()
+    if d not in c.days:
+        return f"{label}: нет графика"
+    parts = [fmt_iv(s, e) for s, e in clip_day(c.offs, d)]
+    parts += [f"возм. {fmt_iv(s, e)}" for s, e in clip_day(c.maybes, d)]
+    return f"{label}: " + (" · ".join(parts) if parts else "без отключений ✅")
+
+
 def status_text(c):
-    L = [f"💡 <b>{escape(c.addr)}</b>",
-         f"Группа: <b>{escape(c.group) or '?'}</b>"
-         + (f" (сайт: {escape(', '.join(c.site_groups))})" if GROUP_OVERRIDE and c.site_groups and c.group not in c.site_groups else ""),
-         ""]
+    L = []
     ev = c.event
     cur = next(((s, e) for s, e in c.offs if s <= c.now < e), None)
     if ev and ev["start"] <= c.now:
-        L.append(f"🚨 <b>Нет света</b> — {escape(ev['desc'])}")
-        L.append(f"💡 Включат ориентировочно: <b>{fmt_end(c.now, ev['end'])}</b>")
+        L.append(f"🚨 <b>Нет света до ~{fmt_end(c.now, ev['end'])}</b> (авария)")
     elif cur:
-        L.append(f"⛔ <b>Нет света</b> по графику")
-        L.append(f"💡 Включат в <b>{fmt_end(cur[0], cur[1])}</b>")
+        L.append(f"⛔ <b>Нет света до {fmt_end(cur[0], cur[1])}</b>")
     else:
         L.append("✅ <b>Свет есть</b>")
     nxt = next(((s, e) for s, e in c.offs if s > c.now), None)
     if nxt:
-        mins = int((nxt[0] - c.now).total_seconds() // 60)
-        left = f"через {mins // 60} ч {mins % 60} мин" if mins >= 60 else f"через {mins} мин"
-        L.append(f"⏭ Следующее: {day_word(nxt[0].date(), c.today)} {fmt_iv(*nxt)} ({left})")
-    elif c.days:
-        L.append("⏭ Дальше отключений по графику нет")
+        L.append(f"⏭ Дальше: {'' if nxt[0].date() == c.today else day_word(nxt[0].date(), c.today) + ' '}{fmt_iv(*nxt)}")
     if ev and ev["start"] > c.now:
-        L.append(f"🛠 {escape(ev['desc'])}: {ev['start']:%d.%m} {fmt_iv(ev['start'], ev['end'])}")
-    for d in (c.today, c.today + timedelta(days=1)):
-        L.append("")
-        L.append(f"<b>{day_word(d, c.today).capitalize()} {d:%d.%m}</b>")
-        L += day_lines(c.days, c.offs, c.maybes, d)
-    if banner_relevant(c.banner):
-        L += ["", "📢 " + escape(c.banner[:400])]
-    upd = c.fact.get("update")
+        L.append(f"🛠 Работы: {ev['start']:%d.%m} {fmt_iv(ev['start'], ev['end'])}")
     L.append("")
-    if upd:
-        L.append(f"<i>ДТЕК обновил: {escape(str(upd))}</i>")
-    L.append(f"<i>Проверено: {c.now:%d.%m %H:%M}</i>")
+    L.append(day_line(c, c.today))
+    L.append(day_line(c, c.today + timedelta(days=1)))
+    L.append(f"<i>🕒 {c.now:%H:%M} · гр. {escape(c.group) or '?'}</i>")
     return "\n".join(L)
 
 
@@ -476,9 +461,8 @@ def do_warnings(c, state, chat):
                 sent.add(f"{key}|{w2}")
         mins = max(1, round(lead))
         head = "⚠️" if w == max(WARN_MINUTES) else "⏰"
-        txt = [f"{head} <b>Через {mins} мин отключение света</b>",
-               f"🕒 {day_word(s.date(), c.today)} {fmt_iv(s, e)}" + (f" — {escape(desc)}" if desc else f" (группа {escape(c.group)})"),
-               f"💡 Включат в <b>{fmt_end(s, e)}</b>"]
+        txt = [f"{head} <b>Через {mins} мин нет света</b>",
+               f"🕒 {fmt_iv(s, e)}" + (f" — {escape(desc)}" if desc else "")]
         send(chat, "\n".join(txt))
     cutoff = (c.now - timedelta(days=2)).isoformat()
     state["sent"] = sorted(k for k in sent if k.split("|")[0] >= cutoff)
@@ -508,12 +492,8 @@ def check_schedule_change(c, state, chat):
     if not changed:
         return
     only_new = all(d not in old for d in changed)
-    title = "📅 <b>Опубликован график</b>" if only_new else "🔄 <b>График изменился</b>"
-    L = [f"{title} (группа {escape(c.group)})"]
-    for iso in changed:
-        d = datetime.fromisoformat(iso).date()
-        L.append(f"<b>{day_word(d, c.today).capitalize()} {d:%d.%m}</b>")
-        L += day_lines(c.days, c.offs, c.maybes, d)
+    title = "📅 <b>Новый график</b>" if only_new else "🔄 <b>График изменился</b>"
+    L = [title] + [day_line(c, datetime.fromisoformat(iso).date()) for iso in changed]
     send(chat, "\n".join(L))
 
 
@@ -526,11 +506,11 @@ def check_event(c, state, chat):
         if not old or old.get("key") != key:
             if ev["start"] <= c.now:
                 head = "🚨 <b>Отключение света</b>" if ev["type"] == "2" else "🛠 <b>Отключение (ремонтные работы)</b>"
-                send(chat, f"{head}\n{escape(ev['desc'])}\n🕒 С {hm(ev['start'])}\n💡 Включат ориентировочно: <b>{fmt_end(c.now, ev['end'])}</b>")
+                send(chat, f"{head}\n💡 Включат ~<b>{fmt_end(c.now, ev['end'])}</b>\n<i>{escape(ev['desc'])}</i>")
             else:
-                send(chat, f"🛠 <b>Запланировано отключение</b>\n{escape(ev['desc'])}\n🕒 {ev['start']:%d.%m} {fmt_iv(ev['start'], ev['end'])}")
+                send(chat, f"🛠 <b>Плановые работы</b>\n🕒 {ev['start']:%d.%m} {fmt_iv(ev['start'], ev['end'])}")
         elif old.get("end") != end_iso:
-            send(chat, f"🕒 <b>Время включения изменено</b>\n💡 Теперь ориентировочно: <b>{fmt_end(c.now, ev['end'])}</b>")
+            send(chat, f"🕒 <b>Включат теперь ~{fmt_end(c.now, ev['end'])}</b>")
         state["event"] = {"key": key, "end": end_iso, "started": ev["start"] <= c.now}
     else:
         if old and old.get("started"):
@@ -544,7 +524,7 @@ def check_banner(c, state, chat):
     rel = banner_relevant(c.banner)
     h = hashlib.md5(c.banner.encode()).hexdigest() if rel else ""
     if rel and state.get("banner") != h:
-        send(chat, "📢 <b>ДТЕК:</b>\n" + escape(c.banner[:800]))
+        send(chat, "📢 <b>ДТЕК:</b>\n" + escape(c.banner[:400]))
     state["banner"] = h
 
 
