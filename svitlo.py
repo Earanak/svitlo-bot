@@ -1,4 +1,4 @@
-# Svitlo Bot v1.2 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.3 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -451,7 +451,8 @@ class Ctx:
     pass
 
 
-def make_ctx(data):
+def make_ctx(data, state=None):
+    state = {} if state is None else state
     c = Ctx()
     c.now = now()
     c.today = c.now.date()
@@ -463,14 +464,32 @@ def make_ctx(data):
     c.days = {d: v for d, v in c.days.items() if d >= c.today - timedelta(days=1)}
     c.offs = intervals(c.days, "off")
     c.maybes = intervals(c.days, "maybe")
-    c.event = house_event(h)
-    if c.event and c.event["end"] <= c.now:
-        c.event = None
-    if c.event and is_schedule_event(c.event, c.offs):
-        c.event = None
+    raw = house_event(h)
+    if raw and raw["end"] <= c.now:
+        raw = None
+    house_active = bool(raw and raw["start"] <= c.now)
+    c.event = raw if raw and not is_schedule_event(raw, c.offs) else None
+    c.early = None
+    cur = next(((s, e) for s, e in c.offs if s <= c.now < e), None)
+    if cur:
+        key = cur[0].isoformat()
+        if house_active:
+            state["seen_off"] = key
+        elif state.get("seen_off") == key and (c.now - cur[0]) > timedelta(minutes=5):
+            c.early = cur
+            c.offs = [(s, c.now) if (s, e) == cur else (s, e) for s, e in c.offs]
     c.banner = data["banner"]
     c.addr = f"{data['street']}, {data['house_key']}"
     return c
+
+
+def check_early(c, state, chat):
+    if not c.early:
+        return
+    key = c.early[0].isoformat()
+    if state.get("early_sent") != key:
+        send(chat, f"💡 <b>Свет дали раньше графика</b>\nПо графику было до {fmt_end(*c.early)}")
+        state["early_sent"] = key
 
 
 DOT = {"on": "🟢", "off": "🔴", "maybe": "🟡"}
@@ -561,10 +580,11 @@ def headline(c):
         return f"Нет света до ~{fmt_end(c.now, ev['end'])}", "Аварийное отключение", C_ORANGE, "🚨"
     if cur:
         return f"Нет света до {fmt_end(cur[0], cur[1])}", (f"Дальше: {nxt_txt}" if nxt else ""), C_RED, "⛔"
+    pre = "Дали раньше графика · " if c.early else ""
     if nxt:
         when = "" if nxt[0].date() == c.today else day_word(nxt[0].date(), c.today) + " "
-        return f"Свет есть до {when}{hm(nxt[0])}", f"Отключение: {nxt_txt}", C_GREEN, "✅"
-    return "Свет есть", ("Отключений по графику нет" if c.days else ""), C_GREEN, "✅"
+        return f"Свет есть до {when}{hm(nxt[0])}", f"{pre}Отключение: {nxt_txt}", C_GREEN, "✅"
+    return "Свет есть", (pre + "Отключений по графику нет" if c.days else pre.strip(" ·")), C_GREEN, "✅"
 
 
 def caption_text(c):
@@ -852,10 +872,11 @@ def main():
         send(chat, "✅ Связь с сайтом ДТЕК восстановлена", silent=True)
     state["fails"] = 0
 
-    c = make_ctx(data)
+    c = make_ctx(data, state)
     log(f"ok: group={c.group or '?'} days={len(c.days)} offs={len(c.offs)} event={'yes' if c.event else 'no'}")
     check_group(c, state, chat)
     check_event(c, state, chat)
+    check_early(c, state, chat)
     check_banner(c, state, chat)
     check_schedule_change(c, state, chat)
     do_warnings(c, state, chat)
