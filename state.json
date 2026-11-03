@@ -11,7 +11,9 @@
  "pin_id": 21,
  "pin_kind": "photo",
  "seen_off": "2026-11-03T15:00:00+02:00",
- "sent": [],
+ "sent": [
+  "off|2026-11-03T20:30:00+02:00|30"
+ ],
  "upd_offset": 79826420,
  "welcomed": true
 }
