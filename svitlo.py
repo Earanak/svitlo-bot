@@ -1,4 +1,4 @@
-# Svitlo Bot v1.0 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.1 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -62,13 +62,11 @@ def save_state(state):
 
 # ---------------- telegram ----------------
 
-def tg(method, **params):
-    req = urllib.request.Request(
-        f"https://api.telegram.org/bot{TOKEN}/{method}",
-        data=json.dumps(params).encode(),
-        headers={"Content-Type": "application/json"})
+def _post(method, data, ctype):
+    req = urllib.request.Request(f"https://api.telegram.org/bot{TOKEN}/{method}",
+                                 data=data, headers={"Content-Type": ctype})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         try:
@@ -77,6 +75,32 @@ def tg(method, **params):
             return {"ok": False, "description": str(e)}
     except Exception as e:
         return {"ok": False, "description": str(e)}
+
+
+def tg(method, **params):
+    return _post(method, json.dumps(params).encode(), "application/json")
+
+
+def tg_files(method, fields, files):
+    bnd = "----svitlo" + os.urandom(8).hex()
+    body = b""
+    for k, v in fields.items():
+        body += f'--{bnd}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n'.encode() + str(v).encode() + b"\r\n"
+    for k, (fn, data) in files.items():
+        body += (f'--{bnd}\r\nContent-Disposition: form-data; name="{k}"; filename="{fn}"\r\n'
+                 f'Content-Type: image/png\r\n\r\n').encode() + data + b"\r\n"
+    body += f"--{bnd}--\r\n".encode()
+    return _post(method, body, f"multipart/form-data; boundary={bnd}")
+
+
+def send_photo(chat, png, caption, silent=False):
+    r = tg_files("sendPhoto", {"chat_id": chat, "caption": caption, "parse_mode": "HTML",
+                               "disable_notification": "true" if silent else "false"},
+                 {"photo": ("svitlo.png", png)})
+    if not r.get("ok"):
+        log(f"sendPhoto failed: {r.get('description')}")
+        return None
+    return r["result"]["message_id"]
 
 
 def send(chat, text, silent=False):
@@ -101,17 +125,42 @@ def poll_updates(state):
     return msgs
 
 
-def update_pinned(state, chat, text):
+def update_pinned(state, chat, c):
     pid = state.get("pin_id")
-    if pid:
-        r = tg("editMessageText", chat_id=chat, message_id=pid, text=text,
-               parse_mode="HTML", disable_web_page_preview=True)
-        if r.get("ok") or "not modified" in str(r.get("description", "")):
-            return
-    mid = send(chat, text, silent=True)
+    png = safe_render(c)
+    if png is None:
+        text = status_text(c)
+        if pid and state.get("pin_kind") != "photo":
+            r = tg("editMessageText", chat_id=chat, message_id=pid, text=text,
+                   parse_mode="HTML", disable_web_page_preview=True)
+            if r.get("ok") or "not modified" in str(r.get("description", "")):
+                return
+        mid = send(chat, text, silent=True)
+        kind = "text"
+    else:
+        cap = caption_text(c)
+        if pid and state.get("pin_kind") == "photo":
+            media = {"type": "photo", "media": "attach://img", "caption": cap, "parse_mode": "HTML"}
+            r = tg_files("editMessageMedia", {"chat_id": chat, "message_id": pid,
+                                              "media": json.dumps(media)}, {"img": ("svitlo.png", png)})
+            if r.get("ok") or "not modified" in str(r.get("description", "")):
+                return
+            log(f"editMessageMedia failed: {r.get('description')}")
+        mid = send_photo(chat, png, cap, silent=True)
+        kind = "photo"
     if mid:
         tg("pinChatMessage", chat_id=chat, message_id=mid, disable_notification=True)
-        state["pin_id"] = mid
+        if pid:
+            tg("unpinChatMessage", chat_id=chat, message_id=pid)
+            tg("deleteMessage", chat_id=chat, message_id=pid)
+        state["pin_id"], state["pin_kind"] = mid, kind
+
+
+def send_status(chat, c, silent=False, title=None):
+    png = safe_render(c)
+    cap = caption_text(c) if not title else title
+    if png is None or not send_photo(chat, png, cap, silent):
+        send(chat, (title + "\n\n" if title else "") + status_text(c), silent)
 
 
 # ---------------- address matching ----------------
@@ -399,35 +448,182 @@ def make_ctx(data):
     return c
 
 
-def day_line(c, d):
-    label = day_word(d, c.today).capitalize()
+DOT = {"on": "🟢", "off": "🔴", "maybe": "🟡"}
+
+
+def day_block(c, d):
+    L = [f"<b>{day_word(d, c.today).capitalize()} {d:%d.%m}</b>"]
     if d not in c.days:
-        return f"{label}: нет графика"
-    parts = [fmt_iv(s, e) for s, e in clip_day(c.offs, d)]
-    parts += [f"возм. {fmt_iv(s, e)}" for s, e in clip_day(c.maybes, d)]
-    return f"{label}: " + (" · ".join(parts) if parts else "без отключений ✅")
+        L.append("нет графика")
+        return L
+    slots = c.days[d]
+    if all(x == "on" for x in slots):
+        L.append("🟢 весь день без отключений")
+        return L
+    base = day_start(d)
+    i = 0
+    while i < 48:
+        j = i
+        while j < 48 and slots[j] == slots[i]:
+            j += 1
+        s, e = base + timedelta(minutes=30 * i), base + timedelta(minutes=30 * j)
+        line = f"{DOT[slots[i]]} {hm(s)} – {fmt_end(s, e)}"
+        if s <= c.now < e:
+            line += "  ◀ сейчас"
+        L.append(line)
+        i = j
+    return L
 
 
 def status_text(c):
     L = []
     ev = c.event
     cur = next(((s, e) for s, e in c.offs if s <= c.now < e), None)
+    nxt = next(((s, e) for s, e in c.offs if s > c.now), None)
     if ev and ev["start"] <= c.now:
         L.append(f"🚨 <b>Нет света до ~{fmt_end(c.now, ev['end'])}</b> (авария)")
     elif cur:
         L.append(f"⛔ <b>Нет света до {fmt_end(cur[0], cur[1])}</b>")
+    elif nxt:
+        when = "" if nxt[0].date() == c.today else day_word(nxt[0].date(), c.today) + " "
+        L.append(f"✅ <b>Свет есть до {when}{hm(nxt[0])}</b>")
     else:
         L.append("✅ <b>Свет есть</b>")
-    nxt = next(((s, e) for s, e in c.offs if s > c.now), None)
-    if nxt:
-        L.append(f"⏭ Дальше: {'' if nxt[0].date() == c.today else day_word(nxt[0].date(), c.today) + ' '}{fmt_iv(*nxt)}")
     if ev and ev["start"] > c.now:
         L.append(f"🛠 Работы: {ev['start']:%d.%m} {fmt_iv(ev['start'], ev['end'])}")
+    for d in (c.today, c.today + timedelta(days=1)):
+        L.append("")
+        L += day_block(c, d)
     L.append("")
-    L.append(day_line(c, c.today))
-    L.append(day_line(c, c.today + timedelta(days=1)))
     L.append(f"<i>🕒 {c.now:%H:%M} · гр. {escape(c.group) or '?'}</i>")
     return "\n".join(L)
+
+
+FONT_FILES = [
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+    ("/usr/share/fonts/truetype/freefont/FreeSans.ttf", "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"),
+]
+_fonts = {}
+
+
+def font(size, bold=False):
+    from PIL import ImageFont
+    k = (size, bold)
+    if k not in _fonts:
+        for reg, bld in FONT_FILES:
+            p = bld if bold else reg
+            if os.path.exists(p):
+                _fonts[k] = ImageFont.truetype(p, size)
+                break
+        else:
+            _fonts[k] = ImageFont.load_default(size)
+    return _fonts[k]
+
+
+C_BG, C_GREEN, C_RED, C_YEL, C_ORANGE = (24, 26, 31), (46, 160, 90), (214, 64, 64), (215, 180, 60), (235, 125, 35)
+C_GRAY, C_TXT, C_DIM = (70, 74, 82), (235, 235, 235), (150, 155, 165)
+
+
+def headline(c):
+    ev = c.event
+    cur = next(((s, e) for s, e in c.offs if s <= c.now < e), None)
+    nxt = next(((s, e) for s, e in c.offs if s > c.now), None)
+    nxt_txt = ""
+    if nxt:
+        nxt_txt = ("" if nxt[0].date() == c.today else day_word(nxt[0].date(), c.today) + " ") + fmt_iv(*nxt)
+    if ev and ev["start"] <= c.now:
+        return f"Нет света до ~{fmt_end(c.now, ev['end'])}", "Аварийное отключение", C_ORANGE, "🚨"
+    if cur:
+        return f"Нет света до {fmt_end(cur[0], cur[1])}", (f"Дальше: {nxt_txt}" if nxt else ""), C_RED, "⛔"
+    if nxt:
+        when = "" if nxt[0].date() == c.today else day_word(nxt[0].date(), c.today) + " "
+        return f"Свет есть до {when}{hm(nxt[0])}", f"Отключение: {nxt_txt}", C_GREEN, "✅"
+    return "Свет есть", ("Отключений по графику нет" if c.days else ""), C_GREEN, "✅"
+
+
+def caption_text(c):
+    h, sub, _, icon = headline(c)
+    L = [f"{icon} <b>{escape(h)}</b>"]
+    if sub:
+        L.append(escape(sub))
+    if c.event and c.event["start"] > c.now:
+        L.append(f"🛠 Работы: {c.event['start']:%d.%m} {fmt_iv(c.event['start'], c.event['end'])}")
+    L.append(f"<i>🕒 {c.now:%H:%M} · гр. {escape(c.group) or '?'}</i>")
+    return "\n".join(L)
+
+
+def render_png(c):
+    from PIL import Image, ImageDraw
+    import io
+    W, H = 1200, 600
+    L, R = 110, W - 40
+    im = Image.new("RGB", (W, H), C_BG)
+    d = ImageDraw.Draw(im)
+    h, sub, col, _ = headline(c)
+    d.text((40, 26), h, font=font(52, True), fill=col)
+    if sub:
+        d.text((40, 96), sub, font=font(34), fill=C_TXT)
+
+    def x(dt, day):
+        return L + (R - L) * (dt - day_start(day)).total_seconds() / 86400
+
+    for n, day in enumerate((c.today, c.today + timedelta(days=1))):
+        y = 165 + n * 200
+        d.text((40, y), f"{day_word(day, c.today).capitalize()}, {day.day}.{day.month:02d}", font=font(30, True), fill=C_TXT)
+        y0, y1 = y + 62, y + 122
+        if day not in c.days:
+            d.rounded_rectangle((L, y0, R, y1), 12, fill=C_GRAY)
+            d.text(((L + R) / 2, (y0 + y1) / 2), "график ещё не опубликован", font=font(30), fill=C_TXT, anchor="mm")
+            continue
+        bar = Image.new("RGB", (R - L, y1 - y0), C_GREEN)
+        bd = ImageDraw.Draw(bar)
+        segs = [(s, e, C_RED) for s, e in clip_day(c.offs, day)]
+        segs += [(s, e, C_YEL) for s, e in clip_day(c.maybes, day)]
+        if c.event:
+            segs += [(s, e, C_ORANGE) for s, e in clip_day([(c.event["start"], c.event["end"])], day)]
+        for s, e, cl in segs:
+            bd.rectangle((x(s, day) - L, 0, x(e, day) - L, y1 - y0), fill=cl)
+        mask = Image.new("L", bar.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, bar.size[0] - 1, bar.size[1] - 1), 12, fill=255)
+        im.paste(bar, (L, y0), mask)
+        for hh in range(0, 25, 3):
+            xx = L + (R - L) * hh / 24
+            d.line((xx, y1, xx, y1 + 8), fill=C_DIM, width=2)
+            d.text((xx, y1 + 12), str(hh), font=font(24), fill=C_DIM, anchor="ma")
+        labs = [(s, e, cl) for s, e, cl in segs if cl != C_YEL]
+        labs.sort(key=lambda t: t[0])
+        f = font(24, True)
+        boxes, ok = [], True
+        for s, e, cl in labs:
+            t = f"{hm(s)}–{fmt_end(s, e)}"
+            w = d.textlength(t, font=f)
+            cx = (x(s, day) + x(e, day)) / 2
+            bx = (cx - w / 2, cx + w / 2)
+            if bx[0] < 10 or bx[1] > W - 10 or (boxes and bx[0] < boxes[-1][1][1] + 12):
+                ok = False
+            boxes.append((t, bx, cx, cl))
+        if ok:
+            for t, bx, cx, cl in boxes:
+                d.text((cx, y0 - 6), t, font=f, fill=cl, anchor="md")
+        elif boxes:
+            d.text((L, y0 - 6), "  ·  ".join(b[0] for b in boxes), font=font(22, True), fill=C_RED, anchor="ld")
+        if day == c.today:
+            xn = x(c.now, day)
+            d.line((xn, y0 - 4, xn, y1 + 4), fill=(255, 255, 255), width=5)
+            d.polygon([(xn - 10, y1 + 6), (xn + 10, y1 + 6), (xn, y1 - 6)], fill=(255, 255, 255))
+    d.text((W - 40, H - 22), f"обновлено {c.now:%H:%M} · группа {c.group or '?'}", font=font(24), fill=C_DIM, anchor="rd")
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def safe_render(c):
+    try:
+        return render_png(c)
+    except Exception as e:
+        log(f"render failed: {type(e).__name__}: {e}")
+        return None
 
 
 def banner_relevant(b):
@@ -493,8 +689,8 @@ def check_schedule_change(c, state, chat):
         return
     only_new = all(d not in old for d in changed)
     title = "📅 <b>Новый график</b>" if only_new else "🔄 <b>График изменился</b>"
-    L = [title] + [day_line(c, datetime.fromisoformat(iso).date()) for iso in changed]
-    send(chat, "\n".join(L))
+    names = ", ".join(day_word(datetime.fromisoformat(iso).date(), c.today) for iso in changed)
+    send_status(chat, c, title=f"{title} ({names})")
 
 
 def check_event(c, state, chat):
@@ -621,9 +817,9 @@ def main():
     check_banner(c, state, chat)
     check_schedule_change(c, state, chat)
     do_warnings(c, state, chat)
-    update_pinned(state, chat, status_text(c))
+    update_pinned(state, chat, c)
     if msgs:
-        send(chat, status_text(c))
+        send_status(chat, c)
     save_state(state)
 
     deadline = time.time() + WAIT_MAX_SEC
@@ -638,7 +834,7 @@ def main():
         time.sleep(wait + 3)
         do_warnings(c, state, chat)
         c.now = now()
-        update_pinned(state, chat, status_text(c))
+        update_pinned(state, chat, c)
         save_state(state)
 
 

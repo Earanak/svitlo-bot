@@ -31,7 +31,8 @@ jobs:
 
       - name: Install Playwright
         run: |
-          pip install -q playwright==1.64.1
+          pip install -q playwright==1.64.1 pillow
+          sudo apt-get install -y -q fonts-dejavu-core >/dev/null || true
           python -m playwright install --with-deps chromium
 
       - name: Run bot
