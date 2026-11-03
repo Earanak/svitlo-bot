@@ -1,4 +1,4 @@
-# Svitlo Bot v1.4 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.5 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -582,6 +582,8 @@ def headline(c):
     if ev and ev["start"] <= c.now:
         return f"Нет света до ~{fmt_end(c.now, ev['end'])}", "Аварийное отключение", C_ORANGE, "🚨"
     if cur:
+        if end_unknown(c, cur[1]):
+            return f"Нет света до {fmt_end(cur[0], cur[1])}", "Дальше график ещё не известен", C_RED, "⛔"
         return f"Нет света до {fmt_end(cur[0], cur[1])}", (f"Дальше: {nxt_txt}" if nxt else ""), C_RED, "⛔"
     pre = "Дали раньше графика · " if c.early else ""
     if nxt:
@@ -681,12 +683,16 @@ def banner_relevant(b):
 
 # ---------------- notifications ----------------
 
+def end_unknown(c, e):
+    return e.time() == dtime(0) and e.date() not in c.days
+
+
 def warn_targets(c):
     t = []
     for s, e in c.offs:
         if s > c.now:
             t.append(("off", s, s, e, None))
-        if e > c.now:
+        if e > c.now and not end_unknown(c, e):
             t.append(("on", e, s, e, None))
     ev = c.event
     if ev:
@@ -723,7 +729,7 @@ def do_warnings(c, state, chat):
         else:
             approx = "~" if desc else ""
             txt = [f"🟢 <b>Через {approx}{mins} мин включат свет</b>",
-                   f"🕒 в {approx}{fmt_end(s, e)}"]
+                   f"🕒 в {approx}{hm(e) if e.date() != s.date() and e.time() != dtime(0) else fmt_end(s, e)}"]
         send(chat, "\n".join(txt))
     cutoff = (c.now - timedelta(days=2)).isoformat()
     state["sent"] = sorted(k for k in sent if k.split("|")[1] >= cutoff)
@@ -898,7 +904,7 @@ def main():
         if not due:
             break
         wait = (due - now()).total_seconds()
-        if wait <= 0 or time.time() + wait > deadline:
+        if wait <= 0 or time.time() + wait > deadline + 30:
             break
         log(f"waiting {int(wait)}s for exact warning")
         time.sleep(wait + 3)
