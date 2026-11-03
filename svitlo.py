@@ -390,6 +390,14 @@ def house_event(h):
     return {"start": s, "end": e, "type": typ, "desc": desc}
 
 
+MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+          "августа", "сентября", "октября", "ноября", "декабря"]
+
+
+def dm(d):
+    return f"{d.day} {MONTHS[d.month - 1]}"
+
+
 def hm(t):
     return t.strftime("%H:%M")
 
@@ -398,7 +406,7 @@ def fmt_end(s, e):
     if e.time() == dtime(0) and e.date() == s.date() + timedelta(days=1):
         return "24:00"
     if e.date() != s.date():
-        return f"{hm(e)} ({e:%d.%m})"
+        return f"{hm(e)} ({dm(e)})"
     return hm(e)
 
 
@@ -411,7 +419,7 @@ def day_word(d, ref):
         return "сегодня"
     if d == ref + timedelta(days=1):
         return "завтра"
-    return d.strftime("%d.%m")
+    return dm(d)
 
 
 def clip_day(ivs, d):
@@ -452,7 +460,7 @@ DOT = {"on": "🟢", "off": "🔴", "maybe": "🟡"}
 
 
 def day_block(c, d):
-    L = [f"<b>{day_word(d, c.today).capitalize()} {d:%d.%m}</b>"]
+    L = [f"<b>{day_word(d, c.today).capitalize()}, {dm(d)}</b>"]
     if d not in c.days:
         L.append("нет графика")
         return L
@@ -490,7 +498,7 @@ def status_text(c):
     else:
         L.append("✅ <b>Свет есть</b>")
     if ev and ev["start"] > c.now:
-        L.append(f"🛠 Работы: {ev['start']:%d.%m} {fmt_iv(ev['start'], ev['end'])}")
+        L.append(f"🛠 Работы: {dm(ev['start'])} {fmt_iv(ev['start'], ev['end'])}")
     for d in (c.today, c.today + timedelta(days=1)):
         L.append("")
         L += day_block(c, d)
@@ -548,7 +556,7 @@ def caption_text(c):
     if sub:
         L.append(escape(sub))
     if c.event and c.event["start"] > c.now:
-        L.append(f"🛠 Работы: {c.event['start']:%d.%m} {fmt_iv(c.event['start'], c.event['end'])}")
+        L.append(f"🛠 Работы: {dm(c.event['start'])} {fmt_iv(c.event['start'], c.event['end'])}")
     L.append(f"<i>🕒 {c.now:%H:%M} · гр. {escape(c.group) or '?'}</i>")
     return "\n".join(L)
 
@@ -570,7 +578,7 @@ def render_png(c):
 
     for n, day in enumerate((c.today, c.today + timedelta(days=1))):
         y = 165 + n * 200
-        d.text((40, y), f"{day_word(day, c.today).capitalize()}, {day.day}.{day.month:02d}", font=font(30, True), fill=C_TXT)
+        d.text((40, y), f"{day_word(day, c.today).capitalize()}, {dm(day)}", font=font(30, True), fill=C_TXT)
         y0, y1 = y + 62, y + 122
         if day not in c.days:
             d.rounded_rectangle((L, y0, R, y1), 12, fill=C_GRAY)
@@ -704,7 +712,7 @@ def check_event(c, state, chat):
                 head = "🚨 <b>Отключение света</b>" if ev["type"] == "2" else "🛠 <b>Отключение (ремонтные работы)</b>"
                 send(chat, f"{head}\n💡 Включат ~<b>{fmt_end(c.now, ev['end'])}</b>\n<i>{escape(ev['desc'])}</i>")
             else:
-                send(chat, f"🛠 <b>Плановые работы</b>\n🕒 {ev['start']:%d.%m} {fmt_iv(ev['start'], ev['end'])}")
+                send(chat, f"🛠 <b>Плановые работы</b>\n🕒 {dm(ev['start'])} {fmt_iv(ev['start'], ev['end'])}")
         elif old.get("end") != end_iso:
             send(chat, f"🕒 <b>Включат теперь ~{fmt_end(c.now, ev['end'])}</b>")
         state["event"] = {"key": key, "end": end_iso, "started": ev["start"] <= c.now}
