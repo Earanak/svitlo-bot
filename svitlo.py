@@ -26,6 +26,7 @@ ADDRESS = os.environ.get("ADDRESS", "").strip()
 GROUP_OVERRIDE = os.environ.get("GROUP", "").strip()
 CHAT_ENV = os.environ.get("TG_CHAT_ID", "").strip()
 REPLY = os.environ.get("REPLY", "").strip() == "1"
+WAIT_MSG = os.environ.get("WAIT_MSG", "").strip()
 
 SLOT_MAP = {
     "yes": ("on", "on"), "no": ("off", "off"),
@@ -158,6 +159,7 @@ def update_pinned(state, chat, c):
         mid = send_photo(chat, png, cap, silent=True)
         kind = "photo"
     if mid:
+        tg("unpinAllChatMessages", chat_id=chat)
         tg("pinChatMessage", chat_id=chat, message_id=mid, disable_notification=True)
         if pid:
             tg("unpinChatMessage", chat_id=chat, message_id=pid)
@@ -862,6 +864,8 @@ def main():
         log(f"DTEK fetch failed ({state['fails']}): {err}")
         if state["fails"] == FAIL_ALERT_AFTER:
             send(chat, f"⚠️ Не могу получить данные с сайта ДТЕК уже ~{FAIL_ALERT_AFTER * 10} мин.\n<code>{escape(err)}</code>")
+        if WAIT_MSG.isdigit():
+            tg("deleteMessage", chat_id=chat, message_id=int(WAIT_MSG))
         for _ in (msgs or ([1] if REPLY else [])):
             send(chat, "⚠️ Сейчас сайт ДТЕК не отвечает, попробую на следующей проверке.")
             break
@@ -884,6 +888,8 @@ def main():
     update_pinned(state, chat, c)
     if msgs or REPLY:
         send_status(chat, c)
+    if WAIT_MSG.isdigit():
+        tg("deleteMessage", chat_id=chat, message_id=int(WAIT_MSG))
     save_state(state)
 
     deadline = time.time() + WAIT_MAX_SEC

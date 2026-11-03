@@ -7,6 +7,8 @@ on:
     inputs:
       reply:
         default: "0"
+      wait:
+        default: ""
 
 permissions:
   contents: write
@@ -45,6 +47,7 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GROUP: ${{ vars.GROUP }}
           REPLY: ${{ inputs.reply }}
+          WAIT_MSG: ${{ inputs.wait }}
         run: python svitlo.py
 
       - name: Save state
@@ -53,7 +56,7 @@ jobs:
           git config user.name "svitlo-bot"
           git config user.email "svitlo-bot@users.noreply.github.com"
           git add state.json 2>/dev/null || true
-          git diff --cached --quiet || (git commit -q -m "state" && git pull -q --rebase && git push -q)
+          git diff --cached --quiet || (git commit -q -m "state" && git pull -q --rebase -X theirs && git push -q)
 
       - name: Keep schedule alive
         if: always()

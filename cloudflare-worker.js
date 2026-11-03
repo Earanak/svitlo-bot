@@ -1,9 +1,12 @@
-// Svitlo Worker v1.0 | wakes the GitHub bot every 10 min and on Telegram messages
+// Svitlo Worker v1.1 | wakes the GitHub bot every 10 min and on Telegram messages
 const REPO = "Earanak/svitlo-bot";
 const WORKFLOW = "svitlo.yml";
 const CHAT_ID = 741998828;
 
-async function dispatch(env, reply) {
+let lastWake = 0;
+let lastUpdate = 0;
+
+async function dispatch(env, reply, wait) {
   const r = await fetch(`https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`, {
     method: "POST",
     headers: {
@@ -12,7 +15,7 @@ async function dispatch(env, reply) {
       "User-Agent": "svitlo-worker",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ ref: "main", inputs: { reply: reply ? "1" : "0" } }),
+    body: JSON.stringify({ ref: "main", inputs: { reply: reply ? "1" : "0", wait: wait ? String(wait) : "" } }),
   });
   return r.status;
 }
@@ -36,7 +39,7 @@ export default {
     ctx.waitUntil(dispatch(env, false));
   },
 
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const secret = await secretOf(env.TG_TOKEN || "");
 
@@ -57,13 +60,23 @@ export default {
         return new Response("forbidden", { status: 403 });
       }
       const u = await request.json();
-      const chat = u && u.message && u.message.chat && u.message.chat.id;
-      if (chat === CHAT_ID) {
-        const st = await dispatch(env, true);
-        await tg(env, "sendMessage", {
-          chat_id: chat, disable_notification: true,
-          text: st === 204 ? "⏳ Обновляю, пришлю через ~1 мин" : `⚠️ Не удалось разбудить бота (GitHub ${st})`,
-        });
+      const m = u && u.message;
+      const fresh = m && Date.now() / 1000 - m.date < 90;
+      if (m && m.chat && m.chat.id === CHAT_ID && fresh && u.update_id > lastUpdate) {
+        lastUpdate = u.update_id;
+        if (Date.now() - lastWake > 45000) {
+          lastWake = Date.now();
+          ctx.waitUntil((async () => {
+            const w = await tg(env, "sendMessage", {
+              chat_id: CHAT_ID, disable_notification: true, text: "⏳ Обновляю, пришлю через ~1 мин" });
+            const wid = w && w.result && w.result.message_id;
+            const st = await dispatch(env, true, wid);
+            if (st !== 204 && wid) {
+              await tg(env, "editMessageText", { chat_id: CHAT_ID, message_id: wid,
+                text: `⚠️ Не удалось разбудить бота (GitHub ${st})` });
+            }
+          })());
+        }
       }
       return new Response("ok");
     }
