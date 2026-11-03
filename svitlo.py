@@ -125,6 +125,13 @@ def poll_updates(state):
     return msgs
 
 
+def ensure_pinned(chat, pid):
+    r = tg("getChat", chat_id=chat)
+    pm = (r.get("result") or {}).get("pinned_message") or {}
+    if r.get("ok") and pm.get("message_id") != pid:
+        tg("pinChatMessage", chat_id=chat, message_id=pid, disable_notification=True)
+
+
 def update_pinned(state, chat, c):
     pid = state.get("pin_id")
     png = safe_render(c)
@@ -144,6 +151,7 @@ def update_pinned(state, chat, c):
             r = tg_files("editMessageMedia", {"chat_id": chat, "message_id": pid,
                                               "media": json.dumps(media)}, {"img": ("svitlo.png", png)})
             if r.get("ok") or "not modified" in str(r.get("description", "")):
+                ensure_pinned(chat, pid)
                 return
             log(f"editMessageMedia failed: {r.get('description')}")
         mid = send_photo(chat, png, cap, silent=True)
