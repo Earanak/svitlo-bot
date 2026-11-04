@@ -606,12 +606,19 @@ def caption_text(c):
 def render_png(c):
     from PIL import Image, ImageDraw
     import io
-    W, H = 1200, 600
+    W, H = 1200, 570
     L, R = 110, W - 40
     im = Image.new("RGB", (W, H), C_BG)
     d = ImageDraw.Draw(im)
     h, sub, col, _ = headline(c)
-    d.text((40, 26), h, font=font(52, True), fill=col)
+    t1, t2 = f"обновлено {c.now:%H:%M}", f"группа {c.group or '?'}"
+    fw = max(d.textlength(t1, font=font(26)), d.textlength(t2, font=font(26)))
+    d.text((W - 40, 30), t1, font=font(26), fill=C_DIM, anchor="ra")
+    d.text((W - 40, 64), t2, font=font(26), fill=C_DIM, anchor="ra")
+    hs = 52
+    while hs > 30 and d.textlength(h, font=font(hs, True)) > W - 80 - fw - 40:
+        hs -= 2
+    d.text((40, 26 + (52 - hs) // 2), h, font=font(hs, True), fill=col)
     if sub:
         d.text((40, 96), sub, font=font(34), fill=C_TXT)
 
@@ -662,7 +669,6 @@ def render_png(c):
             xn = x(c.now, day)
             d.line((xn, y0 - 4, xn, y1 + 4), fill=(255, 255, 255), width=5)
             d.polygon([(xn - 10, y1 + 6), (xn + 10, y1 + 6), (xn, y1 - 6)], fill=(255, 255, 255))
-    d.text((W - 40, H - 22), f"обновлено {c.now:%H:%M} · группа {c.group or '?'}", font=font(24), fill=C_DIM, anchor="rd")
     buf = io.BytesIO()
     im.save(buf, "PNG", optimize=True)
     return buf.getvalue()
@@ -724,7 +730,7 @@ def do_warnings(c, state, chat):
                 sent.add(f"{key}|{w2}")
         mins = w if abs(lead - w) <= 2 else max(1, round(lead))
         if kind == "off":
-            txt = [f"⏰ <b>Через {mins} мин нет света</b>",
+            txt = [f"🔴 <b>Через {mins} мин нет света</b>",
                    f"🕒 {fmt_iv(s, e)}" + (f" — {escape(desc)}" if desc else "")]
         else:
             approx = "~" if desc else ""
