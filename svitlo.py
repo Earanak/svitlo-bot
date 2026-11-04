@@ -1,4 +1,4 @@
-# Svitlo Bot v1.5 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.6 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -95,23 +95,41 @@ def tg_files(method, fields, files):
     return _post(method, body, f"multipart/form-data; boundary={bnd}")
 
 
-def send_photo(chat, png, caption, silent=False):
+STATE = {}
+
+
+def cleanup(chat, mid):
+    floor = STATE.get("clean_from", max(1, mid - 300))
+    keep = {STATE.get("pin_id")}
+    ids = [i for i in range(floor, mid) if i not in keep]
+    for k in range(0, len(ids), 100):
+        tg("deleteMessages", chat_id=chat, message_ids=ids[k:k + 100])
+    STATE["clean_from"] = mid
+
+
+def send_photo(chat, png, caption, silent=False, clean=True):
     r = tg_files("sendPhoto", {"chat_id": chat, "caption": caption, "parse_mode": "HTML",
                                "disable_notification": "true" if silent else "false"},
                  {"photo": ("svitlo.png", png)})
     if not r.get("ok"):
         log(f"sendPhoto failed: {r.get('description')}")
         return None
-    return r["result"]["message_id"]
+    mid = r["result"]["message_id"]
+    if clean:
+        cleanup(chat, mid)
+    return mid
 
 
-def send(chat, text, silent=False):
+def send(chat, text, silent=False, clean=True):
     r = tg("sendMessage", chat_id=chat, text=text, parse_mode="HTML",
            disable_web_page_preview=True, disable_notification=silent)
     if not r.get("ok"):
         log(f"sendMessage failed: {r.get('description')}")
         return None
-    return r["result"]["message_id"]
+    mid = r["result"]["message_id"]
+    if clean:
+        cleanup(chat, mid)
+    return mid
 
 
 def poll_updates(state):
@@ -144,7 +162,7 @@ def update_pinned(state, chat, c):
                    parse_mode="HTML", disable_web_page_preview=True)
             if r.get("ok") or "not modified" in str(r.get("description", "")):
                 return
-        mid = send(chat, text, silent=True)
+        mid = send(chat, text, silent=True, clean=False)
         kind = "text"
     else:
         cap = ""
@@ -156,7 +174,7 @@ def update_pinned(state, chat, c):
                 ensure_pinned(chat, pid)
                 return
             log(f"editMessageMedia failed: {r.get('description')}")
-        mid = send_photo(chat, png, cap, silent=True)
+        mid = send_photo(chat, png, cap, silent=True, clean=False)
         kind = "photo"
     if mid:
         tg("unpinAllChatMessages", chat_id=chat)
@@ -843,6 +861,8 @@ def main():
         log("ADDRESS must look like: city|street|house")
         return
     state = load_state()
+    global STATE
+    STATE = state
     msgs = poll_updates(state)
     chat = resolve_chat(state, msgs)
     if not chat:
@@ -931,7 +951,7 @@ if __name__ == "__main__":
             sig = hashlib.md5(tb.splitlines()[-1].encode()).hexdigest()
             chat = int(CHAT_ENV) if CHAT_ENV else st.get("chat_id")
             if chat and st.get("crash") != sig:
-                send(chat, "🐞 Ошибка в боте:\n<code>" + escape(tb[-700:]) + "</code>")
+                send(chat, "🐞 Ошибка в боте:\n<code>" + escape(tb[-700:]) + "</code>", clean=False)
                 st["crash"] = sig
                 save_state(st)
         except Exception:
