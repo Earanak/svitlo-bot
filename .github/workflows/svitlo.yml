@@ -9,6 +9,8 @@ on:
         default: "0"
       wait:
         default: ""
+      debug:
+        default: "0"
 
 permissions:
   contents: write
@@ -48,6 +50,7 @@ jobs:
           GROUP: ${{ vars.GROUP }}
           REPLY: ${{ inputs.reply }}
           WAIT_MSG: ${{ inputs.wait }}
+          DEBUG_HOUSES: ${{ inputs.debug }}
         run: python svitlo.py
 
       - name: Save state

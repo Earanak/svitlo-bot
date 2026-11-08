@@ -329,6 +329,13 @@ def fetch_dtek(city_q, street_q, house_q):
                         raise RuntimeError(f"getHomeNum HTTP {st}")
                     resp = parse_json(txt, "getHomeNum")
                     houses = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+                    if os.environ.get("DEBUG_HOUSES") == "1":
+                        hq = house_norm(house_q).split("/")[0]
+                        for k, v in houses.items():
+                            if house_norm(k).split("/")[0] == hq:
+                                v = v or {}
+                                log(f"house {k!r}: groups={v.get('sub_type_reason')} type={v.get('type')!r} "
+                                    f"start={v.get('start_date')!r} end={v.get('end_date')!r} sub={v.get('sub_type')!r}")
                     hk = pick_house(house_q, houses.keys())
                     if hk is None:
                         sim = sorted(houses.keys(), key=lambda k: (house_norm(k)[:2] != house_norm(house_q)[:2], k))[:30]
