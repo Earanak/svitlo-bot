@@ -1,4 +1,4 @@
-# Svitlo Bot v1.6 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.7 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -249,6 +249,20 @@ def pick_house(query, keys):
     return None
 
 
+def twin_houses(hk, keys):
+    m = re.match(r"^(\d+)/(?:корп\.?\s*)?(\d+)$", house_norm(hk))
+    if not m:
+        return []
+    out = []
+    for k in keys:
+        if k == hk:
+            continue
+        m2 = re.match(r"^(\d+)/(?:корп\.?\s*)?(\d+)$", house_norm(k))
+        if m2 and m2.groups() == m.groups():
+            out.append(k)
+    return out
+
+
 class AddrError(Exception):
     pass
 
@@ -340,11 +354,17 @@ def fetch_dtek(city_q, street_q, house_q):
                     if hk is None:
                         sim = sorted(houses.keys(), key=lambda k: (house_norm(k)[:2] != house_norm(house_q)[:2], k))[:30]
                         raise AddrError(f"Дом «{house_q}» не найден на «{street}». Есть: {', '.join(sim) or 'пусто'}")
+                    house = dict(houses[hk] or {})
+                    for k in twin_houses(hk, houses.keys()):
+                        tw = houses[k] or {}
+                        if not house_event(house) and house_event(tw):
+                            for f in ("type", "sub_type", "start_date", "end_date"):
+                                house[f] = tw.get(f)
                     fact = resp.get("fact") if isinstance(resp.get("fact"), dict) else None
                     if not fact or not fact.get("data"):
                         fact = ds.get("fact")
                     return {"city": city, "street": street, "house_key": hk,
-                            "house": houses[hk] or {}, "fact": fact or {}, "banner": banner}
+                            "house": house, "fact": fact or {}, "banner": banner}
                 except AddrError:
                     raise
                 except Exception as e:
