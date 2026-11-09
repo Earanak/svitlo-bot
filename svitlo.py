@@ -168,12 +168,20 @@ def update_pinned(state, chat, c):
         cap = ""
         if pid and state.get("pin_kind") == "photo":
             media = {"type": "photo", "media": "attach://img", "caption": cap, "parse_mode": "HTML"}
-            r = tg_files("editMessageMedia", {"chat_id": chat, "message_id": pid,
-                                              "media": json.dumps(media)}, {"img": ("svitlo.png", png)})
-            if r.get("ok") or "not modified" in str(r.get("description", "")):
-                ensure_pinned(chat, pid)
-                return
-            log(f"editMessageMedia failed: {r.get('description')}")
+            for attempt in range(3):
+                r = tg_files("editMessageMedia", {"chat_id": chat, "message_id": pid,
+                                                  "media": json.dumps(media)}, {"img": ("svitlo.png", png)})
+                desc = str(r.get("description", ""))
+                if r.get("ok") or "not modified" in desc:
+                    ensure_pinned(chat, pid)
+                    return
+                log(f"editMessageMedia failed: {desc}")
+                gone = any(w in desc.lower() for w in ("not found", "can't be edited", "message_id_invalid", "no media"))
+                if gone:
+                    break
+                if attempt == 2:
+                    return
+                time.sleep(5)
         mid = send_photo(chat, png, cap, silent=True, clean=False)
         kind = "photo"
     if mid:
