@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
@@ -39,8 +39,11 @@ jobs:
       - name: Install Playwright
         run: |
           pip install -q playwright==1.64.1 pillow
+          for i in 1 2 3; do
+            python -m playwright install --with-deps chromium && break
+            sleep 20
+          done
           sudo apt-get install -y -q fonts-dejavu-core >/dev/null || true
-          python -m playwright install --with-deps chromium
 
       - name: Run bot
         env:
@@ -66,6 +69,20 @@ jobs:
             sleep $((i * 10))
           done
           echo "::warning::state not saved"
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(gh api "repos/${{ github.repository }}/actions/runs?status=completed&per_page=1" --jq '.workflow_runs[0].conclusion' || echo "")
+          chat=$(python -c "import json;print(json.load(open('state.json')).get('chat_id',''))" 2>/dev/null || echo "")
+          if [ "$prev" = "success" ] && [ -n "$chat" ]; then
+            curl -s -o /dev/null "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${chat}" \
+              --data-urlencode "text=⚠️ Бот не смог запуститься (сбой на стороне GitHub). Закреп может быть устаревшим, попробую снова через 10 минут."
+          fi
 
       - name: Keep schedule alive
         if: always()
