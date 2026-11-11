@@ -308,7 +308,12 @@ def fetch_dtek(city_q, street_q, house_q):
     from playwright.sync_api import sync_playwright
     last = None
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--disable-blink-features=AutomationControlled"])
+        args = ["--disable-blink-features=AutomationControlled"]
+        try:
+            browser = p.chromium.launch(channel="chrome", args=args)
+        except Exception as e:
+            log(f"system Chrome not available ({type(e).__name__}), using bundled Chromium")
+            browser = p.chromium.launch(args=args)
         try:
             for attempt in range(3):
                 ctx = browser.new_context(user_agent=UA, locale="uk-UA",

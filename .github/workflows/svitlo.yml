@@ -39,11 +39,9 @@ jobs:
       - name: Install Playwright
         run: |
           pip install -q playwright==1.64.1 pillow
-          for i in 1 2 3; do
-            python -m playwright install --with-deps chromium && break
-            sleep 20
-          done
-          sudo apt-get install -y -q fonts-dejavu-core >/dev/null || true
+          if ! command -v google-chrome >/dev/null; then
+            timeout 300 python -m playwright install chromium || true
+          fi
 
       - name: Run bot
         env:
