@@ -1,4 +1,4 @@
-# Svitlo Bot v1.7 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.8 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -483,6 +483,8 @@ def day_word(d, ref):
         return "сегодня"
     if d == ref + timedelta(days=1):
         return "завтра"
+    if d == ref - timedelta(days=1):
+        return "вчера"
     return dm(d)
 
 
@@ -659,7 +661,7 @@ def caption_text(c):
 def render_png(c):
     from PIL import Image, ImageDraw
     import io
-    W, H = 1200, 570
+    W, H = 1200, 640 if getattr(c, 'stats', None) else 570
     L, R = 110, W - 40
     im = Image.new("RGB", (W, H), C_BG)
     d = ImageDraw.Draw(im)
@@ -722,6 +724,23 @@ def render_png(c):
             xn = x(c.now, day)
             d.line((xn, y0 - 4, xn, y1 + 4), fill=(255, 255, 255), width=5)
             d.polygon([(xn - 10, y1 + 6), (xn + 10, y1 + 6), (xn, y1 - 6)], fill=(255, 255, 255))
+    st = getattr(c, "stats", None)
+    if st:
+        y = 552
+        if st["last"]:
+            t = f"График изменён: {day_word(st['last'].date(), c.today)} {hm(st['last'])} (за сутки: {plural_raz(st['cnt'])})"
+        else:
+            t = "За сутки график не менялся"
+        d.text((40, y), t, font=font(24), fill=C_DIM)
+        y += 38
+        lab = "За сутки:" if st["full"] else f"С {hm(st['start'])}:"
+        d.text((40, y), lab, font=font(24), fill=C_DIM)
+        x0 = 40 + d.textlength(lab, font=font(24)) + 18
+        for col, sec, word in ((C_RED, st["off"], "без света"), (C_GREEN, st["on"], "со светом")):
+            d.rounded_rectangle((x0, y + 2, x0 + 24, y + 26), 5, fill=col)
+            txt = f"{dur(sec)} {word}"
+            d.text((x0 + 34, y), txt, font=font(24, True), fill=C_TXT)
+            x0 += 34 + d.textlength(txt, font=font(24, True)) + 30
     buf = io.BytesIO()
     im.save(buf, "PNG", optimize=True)
     return buf.getvalue()
@@ -807,6 +826,64 @@ def next_due(c, state):
     return best
 
 
+def plural_raz(n):
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} раз"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} раза"
+    return f"{n} раз"
+
+
+def dur(sec):
+    m = int(round(sec / 60))
+    h, m = divmod(m, 60)
+    if h and m:
+        return f"{h} ч {m} мин"
+    return f"{h} ч" if h else f"{m} мин"
+
+
+def is_off_now(c):
+    if c.event and c.event["start"] <= c.now < c.event["end"]:
+        return True
+    return any(s <= c.now < e for s, e in c.offs)
+
+
+def update_stats(c, state):
+    day_ago = c.now - timedelta(hours=24)
+    chg = [t for t in state.get("chg", []) if datetime.fromisoformat(t) > c.now - timedelta(hours=48)]
+    state["chg"] = chg
+    last = datetime.fromisoformat(chg[-1]) if chg else None
+    cnt = sum(1 for t in chg if datetime.fromisoformat(t) > day_ago)
+
+    hist = state.get("hist")
+    if not hist:
+        hist, t, prev = [], day_start(c.today), None
+        while t < c.now:
+            off = any(s <= t < e for s, e in c.offs)
+            if off != prev:
+                hist.append([t.isoformat(), int(off)])
+                prev = off
+            t += timedelta(minutes=30)
+    off_now = int(is_off_now(c))
+    if hist[-1][1] != off_now:
+        hist.append([c.now.isoformat(), off_now])
+    keep = [h for h in hist if datetime.fromisoformat(h[0]) > c.now - timedelta(hours=26)]
+    older = [h for h in hist if datetime.fromisoformat(h[0]) <= c.now - timedelta(hours=26)]
+    state["hist"] = older[-1:] + keep
+
+    start = max(day_ago, datetime.fromisoformat(state["hist"][0][0]))
+    off_sec = on_sec = 0.0
+    pts = state["hist"] + [[c.now.isoformat(), None]]
+    for (t1, v), (t2, _) in zip(pts, pts[1:]):
+        a, b = max(datetime.fromisoformat(t1), start), datetime.fromisoformat(t2)
+        if b > a:
+            if v:
+                off_sec += (b - a).total_seconds()
+            else:
+                on_sec += (b - a).total_seconds()
+    c.stats = {"last": last, "cnt": cnt, "off": off_sec, "on": on_sec, "full": start <= day_ago + timedelta(minutes=1), "start": start}
+
+
 def check_schedule_change(c, state, chat):
     new = {d.isoformat(): "".join(SLOT_CHR[x] for x in v) for d, v in c.days.items() if d >= c.today}
     old = state.get("days")
@@ -817,6 +894,7 @@ def check_schedule_change(c, state, chat):
     changed = [d for d in sorted(new) if old.get(d) != new[d]]
     if not changed:
         return
+    state.setdefault("chg", []).append(c.now.isoformat())
     only_new = all(d not in old for d in changed)
     title = "📅 <b>Новый график</b>" if only_new else "🔄 <b>График изменился</b>"
     names = ", ".join(day_word(datetime.fromisoformat(iso).date(), c.today) for iso in changed)
@@ -951,6 +1029,7 @@ def main():
     check_early(c, state, chat)
     check_banner(c, state, chat)
     check_schedule_change(c, state, chat)
+    update_stats(c, state)
     do_warnings(c, state, chat)
     update_pinned(state, chat, c)
     if msgs or REPLY:
