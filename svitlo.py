@@ -716,8 +716,9 @@ def render_png(c):
             t = f"{hm(s)}–{fmt_end(s, e)}"
             w = d.textlength(t, font=f)
             cx = (x(s, day) + x(e, day)) / 2
+            cx = min(max(cx, 10 + w / 2), W - 10 - w / 2)
             bx = (cx - w / 2, cx + w / 2)
-            if bx[0] < 10 or bx[1] > W - 10 or (boxes and bx[0] < boxes[-1][1][1] + 12):
+            if boxes and bx[0] < boxes[-1][1][1] + 12:
                 ok = False
             boxes.append((t, bx, cx, cl))
         if ok:
