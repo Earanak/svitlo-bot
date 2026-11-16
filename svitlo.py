@@ -1,4 +1,4 @@
-# Svitlo Bot v1.8 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
+# Svitlo Bot v1.9 | DTEK Odesa outage notifier for Telegram | runs on GitHub Actions
 import hashlib
 import json
 import os
@@ -530,8 +530,8 @@ def make_ctx(data, state=None):
     raw = house_event(h)
     if raw and raw["end"] <= c.now:
         raw = None
-    house_active = bool(raw and raw["start"] <= c.now)
     c.event = raw if raw and not is_schedule_event(raw, c.offs) else None
+    house_active = bool(raw and raw["start"] <= c.now and not c.event)
     c.early = None
     cur = next(((s, e) for s, e in c.offs if s <= c.now < e), None)
     if cur:
@@ -541,9 +541,37 @@ def make_ctx(data, state=None):
         elif state.get("seen_off") == key and (c.now - cur[0]) > timedelta(minutes=5):
             c.early = cur
             c.offs = [(s, c.now) if (s, e) == cur else (s, e) for s, e in c.offs]
+    if c.event:
+        c.offs = merge_ivs(c.offs + [(c.event["start"], c.event["end"])])
     c.banner = data["banner"]
     c.addr = f"{data['street']}, {data['house_key']}"
     return c
+
+
+def merge_ivs(ivs):
+    out = []
+    for s, e in sorted(ivs):
+        if out and s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def ev_label(ev):
+    return "Ремонтные работы" if ev["type"] == "1" else "Аварийное отключение"
+
+
+def ev_block(c):
+    ev = c.event
+    if not ev:
+        return None
+    return next(((s, e) for s, e in c.offs if s <= ev["start"] < e), (ev["start"], ev["end"]))
+
+
+def end_txt(c, s, e):
+    t = fmt_end(s, e)
+    return ("~" + t) if c.event and e == c.event["end"] else t
 
 
 def check_early(c, state, chat):
@@ -640,7 +668,11 @@ def headline(c):
     if nxt:
         nxt_txt = ("" if nxt[0].date() == c.today else day_word(nxt[0].date(), c.today) + " ") + fmt_iv(*nxt)
     if ev and ev["start"] <= c.now:
-        return f"Нет света до ~{fmt_end(c.now, ev['end'])}", "Аварийное отключение", C_ORANGE, "🚨"
+        bs, be = ev_block(c)
+        sub = ev_label(ev)
+        if be > ev["end"]:
+            sub += f" до {hm(ev['end'])}, затем по графику"
+        return f"Нет света до {end_txt(c, bs, be)}", sub, C_ORANGE, "🛠" if ev["type"] == "1" else "🚨"
     if cur:
         if end_unknown(c, cur[1]):
             return f"Нет света до {fmt_end(cur[0], cur[1])}", "Дальше график ещё не известен", C_RED, "⛔"
@@ -708,7 +740,7 @@ def render_png(c):
             xx = L + (R - L) * hh / 24
             d.line((xx, y1, xx, y1 + 8), fill=C_DIM, width=2)
             d.text((xx, y1 + 12), str(hh), font=font(24), fill=C_DIM, anchor="ma")
-        labs = [(s, e, cl) for s, e, cl in segs if cl != C_YEL]
+        labs = [(s, e, cl) for s, e, cl in segs if cl == C_RED]
         labs.sort(key=lambda t: t[0])
         f = font(24, True)
         boxes, ok = [], True
@@ -780,10 +812,7 @@ def warn_targets(c):
             t.append(("on", e, s, e, None))
     ev = c.event
     if ev:
-        if ev["start"] > c.now:
-            t.append(("off", ev["start"], ev["start"], ev["end"], ev["desc"]))
-        if ev["end"] > c.now:
-            t.append(("on", ev["end"], ev["start"], ev["end"], ev["desc"]))
+        t = [(k, at, s, e, ev_label(ev) if s < ev["end"] and e > ev["start"] else d) for k, at, s, e, d in t]
     return t
 
 
@@ -811,7 +840,7 @@ def do_warnings(c, state, chat):
             txt = [f"🔴 <b>Через {mins} мин нет света</b>",
                    f"🕒 {fmt_iv(s, e)}" + (f" — {escape(desc)}" if desc else "")]
         else:
-            approx = "~" if desc else ""
+            approx = "~" if c.event and e == c.event["end"] else ""
             txt = [f"🟢 <b>Через {approx}{mins} мин включат свет</b>",
                    f"🕒 в {approx}{hm(e) if e.date() != s.date() and e.time() != dtime(0) else fmt_end(s, e)}"]
         send(chat, "\n".join(txt))
@@ -872,7 +901,12 @@ def update_stats(c, state):
             t += timedelta(minutes=30)
     off_now = int(is_off_now(c))
     if hist[-1][1] != off_now:
-        hist.append([c.now.isoformat(), off_now])
+        t = c.now
+        if off_now:
+            blk = next(((s, e) for s, e in c.offs if s <= c.now < e), None)
+            if blk:
+                t = max(blk[0], datetime.fromisoformat(hist[-1][0]))
+        hist.append([t.isoformat(), off_now])
     keep = [h for h in hist if datetime.fromisoformat(h[0]) > c.now - timedelta(hours=26)]
     older = [h for h in hist if datetime.fromisoformat(h[0]) <= c.now - timedelta(hours=26)]
     state["hist"] = older[-1:] + keep
@@ -914,13 +948,16 @@ def check_event(c, state, chat):
         key = f"{ev['start'].isoformat()}|{ev['type']}"
         end_iso = ev["end"].isoformat()
         if not old or old.get("key") != key:
+            bs, be = ev_block(c)
+            tail = f"\n<i>{escape(ev_label(ev))} до {hm(ev['end'])}, затем отключение по графику</i>" if be > ev["end"] else f"\n<i>{escape(ev['desc'])}</i>"
             if ev["start"] <= c.now:
                 head = "🚨 <b>Отключение света</b>" if ev["type"] == "2" else "🛠 <b>Отключение (ремонтные работы)</b>"
-                send(chat, f"{head}\n💡 Включат ~<b>{fmt_end(c.now, ev['end'])}</b>\n<i>{escape(ev['desc'])}</i>")
+                send(chat, f"{head}\n💡 Включат <b>{end_txt(c, bs, be)}</b>{tail}")
             else:
-                send(chat, f"🛠 <b>Плановые работы</b>\n🕒 {dm(ev['start'])} {fmt_iv(ev['start'], ev['end'])}")
+                send(chat, f"🛠 <b>Плановые работы</b>\n🕒 {dm(ev['start'])} {fmt_iv(ev['start'], ev['end'])}{tail if be > ev['end'] else ''}")
         elif old.get("end") != end_iso:
-            send(chat, f"🕒 <b>Включат теперь ~{fmt_end(c.now, ev['end'])}</b>")
+            bs, be = ev_block(c)
+            send(chat, f"🕒 <b>Включат теперь {end_txt(c, bs, be)}</b>")
         state["event"] = {"key": key, "end": end_iso, "started": ev["start"] <= c.now}
     else:
         if old and old.get("started"):
